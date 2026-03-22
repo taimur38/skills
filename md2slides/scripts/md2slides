@@ -1,0 +1,55 @@
+#!/bin/bash
+# md2slides - Convert markdown to a 16:9 PDF slide deck via Marp
+#
+# Usage:
+#   md2slides input.md             → produces input.pdf in the same directory
+#   md2slides input.md output.pdf  → produces output.pdf at the specified path
+#
+# Markdown frontmatter:
+#   marp: true
+#   theme: growth-lab   ← uses the bundled marp-theme.css
+#   size: 16:9
+#   paginate: true
+#
+# Slide types (set with <!-- _class: type -->):
+#   title      dark title slide
+#   break      dark blue section divider
+#   img-slide  image-left layout (use ![bg left:55%](img.png))
+#   closing    light closing slide
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+THEME="$SCRIPT_DIR/../assets/marp-theme.css"
+
+if [ -z "$1" ]; then
+  echo "Usage: md2slides input.md [output.pdf]"
+  exit 1
+fi
+
+INPUT="$1"
+OUTPUT="${2:-${INPUT%.md}.pdf}"
+
+if [ ! -f "$INPUT" ]; then
+  echo "Error: File not found: $INPUT"
+  exit 1
+fi
+
+if [ ! -f "$THEME" ]; then
+  echo "Error: Theme not found at $THEME"
+  exit 1
+fi
+
+# Load nvm so marp is available
+unset NPM_CONFIG_PREFIX
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
+marp "$INPUT" \
+  --pdf \
+  --html \
+  --theme "$THEME" \
+  --allow-local-files \
+  -o "$OUTPUT"
+
+echo "Created: $OUTPUT"

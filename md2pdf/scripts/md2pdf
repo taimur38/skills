@@ -1,0 +1,52 @@
+#!/bin/bash
+# md2pdf - Convert markdown to a well-formatted PDF
+#
+# Usage:
+#   md2pdf input.md             → produces input.pdf in the same directory
+#   md2pdf input.md output.pdf  → produces output.pdf at the specified path
+#
+# Markdown frontmatter (optional):
+#   pdf_options:
+#     format: Letter            # or A4
+#     margin: "1in 1.1in"
+#   highlight_style: github
+
+set -e
+
+unset NPM_CONFIG_PREFIX
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+STYLESHEET="$SCRIPT_DIR/../assets/md2pdf-style.css"
+
+if [ -z "$1" ]; then
+  echo "Usage: md2pdf input.md [output.pdf]"
+  exit 1
+fi
+
+INPUT="$1"
+OUTPUT="${2:-${INPUT%.md}.pdf}"
+
+if [ ! -f "$INPUT" ]; then
+  echo "Error: File not found: $INPUT"
+  exit 1
+fi
+
+if [ ! -f "$STYLESHEET" ]; then
+  echo "Error: Stylesheet not found at $STYLESHEET"
+  exit 1
+fi
+
+npx md-to-pdf "$INPUT" \
+  --stylesheet "$STYLESHEET" \
+  --pdf-options '{"format": "Letter", "margin": {"top": "1in", "bottom": "1in", "left": "1.1in", "right": "1.1in"}, "printBackground": true}' \
+  --highlight-style github
+
+# md-to-pdf always writes next to the source file; move if a different output path was requested
+SRC_PDF="${INPUT%.md}.pdf"
+if [ "$SRC_PDF" != "$OUTPUT" ]; then
+  mv "$SRC_PDF" "$OUTPUT"
+fi
+
+echo "Created: $OUTPUT"
