@@ -1,0 +1,104 @@
+#!/bin/bash
+# rollup - Merge sections/ back into a single markdown document
+#
+# Usage:
+#   rollup sections/                       → outputs to stdout
+#   rollup sections/ -o full-document.md   → writes to file
+#   rollup sections/ -o full.md --bib      → also merges bibliography entries
+#
+# Reads .manifest for ordering. Falls back to alphabetical sort if no manifest.
+
+set -euo pipefail
+
+usage() {
+    echo "Usage: rollup <sections-dir> [-o output.md]"
+    exit 1
+}
+
+if [ -z "${1:-}" ]; then usage; fi
+
+SECTIONS_DIR="$1"
+shift
+
+OUTPUT=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o|--output) OUTPUT="$2"; shift 2 ;;
+        *)           echo "Unknown option: $1"; usage ;;
+    esac
+done
+
+if [ ! -d "$SECTIONS_DIR" ]; then
+    echo "Error: Directory not found: $SECTIONS_DIR"
+    exit 1
+fi
+
+python3 - "$SECTIONS_DIR" "$OUTPUT" << 'PYTHON'
+import sys
+import os
+import re
+import yaml
+
+sections_dir = sys.argv[1]
+output_file = sys.argv[2] if sys.argv[2] else None
+
+# Get file order from manifest or alphabetical
+manifest_path = os.path.join(sections_dir, '.manifest')
+if os.path.exists(manifest_path):
+    with open(manifest_path) as f:
+        files = [line.strip() for line in f if line.strip()]
+else:
+    files = sorted(f for f in os.listdir(sections_dir)
+                   if f.endswith('.md') and not f.startswith('.'))
+
+if not files:
+    print("Error: No markdown files found in sections directory.", file=sys.stderr)
+    sys.exit(1)
+
+# Extract document title from first section's frontmatter
+doc_title = ""
+parts = []
+
+for filename in files:
+    filepath = os.path.join(sections_dir, filename)
+    if not os.path.exists(filepath):
+        print(f"Warning: {filename} from manifest not found, skipping", file=sys.stderr)
+        continue
+
+    with open(filepath) as f:
+        content = f.read()
+
+    # Strip YAML frontmatter
+    body = content
+    if content.startswith('---'):
+        end = content.find('---', 3)
+        if end != -1:
+            fm_text = content[3:end].strip()
+            try:
+                fm = yaml.safe_load(fm_text)
+                if not doc_title and fm.get('parent'):
+                    doc_title = fm['parent']
+            except:
+                pass
+            body = content[end+3:].strip()
+
+    parts.append(body)
+
+# Assemble document
+assembled = ""
+if doc_title:
+    assembled = f"# {doc_title}\n\n"
+
+assembled += "\n\n---\n\n".join(parts)
+
+# Add trailing newline
+if not assembled.endswith('\n'):
+    assembled += '\n'
+
+if output_file:
+    with open(output_file, 'w') as f:
+        f.write(assembled)
+    print(f"Rolled up {len(parts)} sections → {output_file}")
+else:
+    print(assembled)
+PYTHON

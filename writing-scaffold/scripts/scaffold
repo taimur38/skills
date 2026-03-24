@@ -1,0 +1,127 @@
+#!/bin/bash
+# scaffold - Break an outline markdown into a sections/ directory of individual files
+#
+# Usage:
+#   scaffold outline.md                    → creates sections/ next to outline.md
+#   scaffold outline.md --output ./parts   → creates parts/ at specified path
+#   scaffold outline.md --bib refs.bib     → uses specified bib file path in frontmatter
+#
+# The outline should use markdown headers (## or ###) to define sections.
+# Each top-level section (##) becomes its own file. Subsections are included
+# in their parent section's file.
+
+set -euo pipefail
+
+usage() {
+    echo "Usage: scaffold <outline.md> [--output <dir>] [--bib <references.bib>]"
+    exit 1
+}
+
+if [ -z "${1:-}" ]; then usage; fi
+
+INPUT="$1"
+shift
+
+if [ ! -f "$INPUT" ]; then
+    echo "Error: File not found: $INPUT"
+    exit 1
+fi
+
+INPUT_DIR="$(cd "$(dirname "$INPUT")" && pwd)"
+OUTPUT_DIR="$INPUT_DIR/sections"
+BIB_PATH="references.bib"
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --output) OUTPUT_DIR="$2"; shift 2 ;;
+        --bib)    BIB_PATH="$2"; shift 2 ;;
+        *)        echo "Unknown option: $1"; usage ;;
+    esac
+done
+
+mkdir -p "$OUTPUT_DIR"
+
+python3 - "$INPUT" "$OUTPUT_DIR" "$BIB_PATH" << 'PYTHON'
+import sys
+import re
+import os
+
+input_file = sys.argv[1]
+output_dir = sys.argv[2]
+bib_path = sys.argv[3]
+
+with open(input_file, 'r') as f:
+    content = f.read()
+
+# Extract document-level title and any preamble
+lines = content.split('\n')
+doc_title = ""
+preamble = []
+body_start = 0
+
+for i, line in enumerate(lines):
+    if line.startswith('# ') and not line.startswith('## '):
+        doc_title = line[2:].strip()
+        body_start = i + 1
+        break
+    preamble.append(line)
+
+# Parse sections at ## level (top-level sections)
+sections = []
+current_section = None
+current_lines = []
+
+for line in lines[body_start:]:
+    if line.startswith('## '):
+        if current_section:
+            sections.append((current_section, '\n'.join(current_lines).strip()))
+        current_section = line[3:].strip()
+        current_lines = []
+    else:
+        current_lines.append(line)
+
+if current_section:
+    sections.append((current_section, '\n'.join(current_lines).strip()))
+
+if not sections:
+    print("Error: No ## sections found in outline. Use ## headers to define sections.")
+    sys.exit(1)
+
+# Generate section files
+manifest = []
+for i, (title, body) in enumerate(sections, 1):
+    # Create filename from section title
+    slug = re.sub(r'[^\w\s-]', '', title.lower())
+    slug = re.sub(r'[\s]+', '-', slug).strip('-')
+    filename = f"{i:02d}-{slug}.md"
+
+    # Build frontmatter
+    frontmatter = f"""---
+title: "{title}"
+section: {i}
+parent: "{doc_title}"
+bibliography: {bib_path}
+---"""
+
+    # Build file content
+    file_content = f"{frontmatter}\n\n# {title}\n"
+    if body:
+        file_content += f"\n{body}\n"
+    else:
+        file_content += "\n<!-- TODO: Write this section -->\n"
+
+    filepath = os.path.join(output_dir, filename)
+    with open(filepath, 'w') as f:
+        f.write(file_content)
+
+    manifest.append(filename)
+    print(f"  Created: {filename}")
+
+# Write manifest for rollup ordering
+manifest_path = os.path.join(output_dir, '.manifest')
+with open(manifest_path, 'w') as f:
+    f.write('\n'.join(manifest) + '\n')
+
+print(f"\nScaffolded {len(sections)} sections into {output_dir}/")
+print(f"Manifest: {output_dir}/.manifest")
+PYTHON
