@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# --- Config ---
+INSTANCE_TYPE="${GPU_INSTANCE_TYPE:-c5.4xlarge}"  # 16 vCPUs, 32GB RAM — CPU-optimized for rayshader
+BAKED_AMI="${BAKED_AMI:-}"  # Set this to your baked AMI ID after running gpu-bake
+BASE_AMI="${BASE_AMI:-}"   # Set this to a Deep Learning Base AMI (Ubuntu 22.04) for your region
+AMI_ID="${GPU_AMI_ID:-$BAKED_AMI}"
+KEY_NAME="${KEY_NAME:-gpu-workstation}"  # Your AWS key pair name
+REGION="${AWS_DEFAULT_REGION:-us-west-2}"
+STATE_FILE="$HOME/.gpu-instance"
+
+if [[ -f "$STATE_FILE" ]]; then
+    EXISTING_ID=$(cat "$STATE_FILE")
+    STATE=$(aws ec2 describe-instances --instance-ids "$EXISTING_ID" --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null || echo "terminated")
+    if [[ "$STATE" != "terminated" && "$STATE" != "shutting-down" ]]; then
+        IP=$(aws ec2 describe-instances --instance-ids "$EXISTING_ID" --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
+        echo "Instance $EXISTING_ID already running at $IP"
+        echo "SSH: ssh ubuntu@$IP"
+        exit 0
+    fi
+    rm -f "$STATE_FILE"
+fi
+
+# --- Security Group (create once, reuse) ---
+SG_NAME="gpu-workstation-sg"
+SG_ID=$(aws ec2 describe-security-groups --group-names "$SG_NAME" --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || true)
+
+if [[ -z "$SG_ID" || "$SG_ID" == "None" ]]; then
+    echo "Creating security group..."
+    SG_ID=$(aws ec2 create-security-group --group-name "$SG_NAME" --description "GPU workstation SSH access" --output text --query 'GroupId')
+    aws ec2 authorize-security-group-ingress --group-id "$SG_ID" --protocol tcp --port 22 --cidr 0.0.0.0/0
+fi
+
+# --- User data for first-boot R + rayshader setup ---
+USERDATA=$(cat <<'SETUP'
+#!/bin/bash
+set -ex
+
+# Skip if already set up (baked AMI)
+if command -v R &>/dev/null && R -e "library(rayshader)" &>/dev/null 2>&1; then
+    echo "R and rayshader already installed, skipping setup"
+    exit 0
+fi
+
+# Install R and system dependencies
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y r-base r-base-dev \
+    libgdal-dev libproj-dev libgeos-dev libudunits2-dev \
+    libglu1-mesa-dev freeglut3-dev mesa-common-dev \
+    libmagick++-dev imagemagick \
+    libcurl4-openssl-dev libssl-dev libxml2-dev \
+    libfontconfig1-dev libfreetype6-dev libharfbuzz-dev libfribidi-dev \
+    libtiff-dev libpng-dev libjpeg-dev cmake \
+    xvfb libavfilter-dev
+
+# Install R packages
+R -e '
+install.packages(c(
+    "rayshader", "rgl", "terra", "sf", "elevatr",
+    "ggplot2", "tidyverse", "magick", "av"
+), repos="https://cloud.r-project.org", Ncpus=4)
+'
+
+# Signal setup complete
+touch /var/lib/gpu-setup-complete
+SETUP
+)
+
+LAUNCH_ARGS=(
+    --image-id "$AMI_ID"
+    --instance-type "$INSTANCE_TYPE"
+    --key-name "$KEY_NAME"
+    --security-group-ids "$SG_ID"
+    --block-device-mappings '[{"DeviceName":"/dev/xvda","Ebs":{"VolumeSize":50,"VolumeType":"gp3"}}]'
+    --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=gpu-workstation}]"
+    --query 'Instances[0].InstanceId'
+    --output text
+)
+
+# Only include setup user-data for base (non-baked) AMIs
+if [[ "$AMI_ID" == "$BASE_AMI" ]]; then
+    echo "Using base AMI — R will be installed on first boot (5-10 min)."
+    LAUNCH_ARGS+=(--user-data "$USERDATA")
+else
+    echo "Using baked AMI — R and rayshader pre-installed."
+fi
+
+# Try spot first, fall back to on-demand
+echo "Trying spot instance ($INSTANCE_TYPE)..."
+INSTANCE_ID=$(aws ec2 run-instances "${LAUNCH_ARGS[@]}" \
+    --instance-market-options '{"MarketType":"spot","SpotOptions":{"SpotInstanceType":"one-time"}}' 2>/dev/null) || true
+
+if [[ -z "$INSTANCE_ID" ]]; then
+    echo "Spot unavailable, launching on-demand..."
+    INSTANCE_ID=$(aws ec2 run-instances "${LAUNCH_ARGS[@]}")
+fi
+
+echo "$INSTANCE_ID" > "$STATE_FILE"
+echo "Instance: $INSTANCE_ID"
+echo "Waiting for instance to be running..."
+aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
+
+IP=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
+echo "IP: $IP"
+
+echo "Waiting for SSH to be ready..."
+for i in $(seq 1 30); do
+    if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 ubuntu@"$IP" true 2>/dev/null; then
+        echo ""
+        echo "=== Render instance ready ==="
+        echo "SSH:  ssh ubuntu@$IP"
+        if [[ "$AMI_ID" == "$BASE_AMI" ]]; then
+            echo "Note: R packages are installing in background via user-data."
+            echo "Check: gpu-run --status"
+        fi
+        exit 0
+    fi
+    printf "."
+    sleep 5
+done
+
+echo ""
+echo "SSH not yet available, but instance is running."
+echo "Try: ssh ubuntu@$IP"

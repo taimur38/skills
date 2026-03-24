@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Bake the current GPU instance into an AMI so future launches skip the R install step.
+# Run this AFTER gpu-up and AFTER R setup is complete (gpu-run --status shows READY).
+
+STATE_FILE="$HOME/.gpu-instance"
+
+if [[ ! -f "$STATE_FILE" ]]; then
+    echo "No running GPU instance. Run gpu-up first." >&2
+    exit 1
+fi
+
+INSTANCE_ID=$(cat "$STATE_FILE")
+DATE=$(date +%Y%m%d-%H%M%S)
+AMI_NAME="gpu-workstation-r-rayshader-$DATE"
+
+echo "Creating AMI from $INSTANCE_ID..."
+AMI_ID=$(aws ec2 create-image \
+    --instance-id "$INSTANCE_ID" \
+    --name "$AMI_NAME" \
+    --description "GPU workstation with R, rayshader, and dependencies" \
+    --no-reboot \
+    --query 'ImageId' \
+    --output text)
+
+echo "AMI: $AMI_ID ($AMI_NAME)"
+echo "Waiting for AMI to be available (this takes a few minutes)..."
+aws ec2 wait image-available --image-ids "$AMI_ID"
+
+echo ""
+echo "=== AMI ready ==="
+echo "Update GPU_AMI_ID in gpu-up to skip R install on future launches:"
+echo "  export GPU_AMI_ID=$AMI_ID"
+echo ""
+echo "Or add to ~/.zshrc:"
+echo "  echo 'export GPU_AMI_ID=$AMI_ID' >> ~/.zshrc"

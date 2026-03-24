@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+STATE_FILE="$HOME/.gpu-instance"
+
+usage() {
+    echo "Usage: gpu-run <script.R> [extra files to upload...] [-- output files to download]"
+    echo ""
+    echo "Examples:"
+    echo "  gpu-run render.R                          # run script, pull back *.png *.jpg *.pdf"
+    echo "  gpu-run render.R data.tif                  # upload data.tif too"
+    echo "  gpu-run render.R data.tif -- output.png    # explicit output files"
+    echo "  gpu-run --ssh                              # just SSH into the instance"
+    echo "  gpu-run --status                           # check if R setup is complete"
+    exit 1
+}
+
+get_ip() {
+    if [[ ! -f "$STATE_FILE" ]]; then
+        echo "No running instance. Run gpu-up first." >&2
+        exit 1
+    fi
+    INSTANCE_ID=$(cat "$STATE_FILE")
+    IP=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
+    if [[ -z "$IP" || "$IP" == "None" ]]; then
+        echo "Instance $INSTANCE_ID has no public IP. It may have been terminated." >&2
+        rm -f "$STATE_FILE"
+        exit 1
+    fi
+}
+
+SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=10"
+REMOTE_DIR="/home/ubuntu/work"
+
+if [[ $# -eq 0 ]]; then usage; fi
+
+case "$1" in
+    --ssh)
+        get_ip
+        exec ssh $SSH_OPTS ubuntu@"$IP"
+        ;;
+    --status)
+        get_ip
+        ssh $SSH_OPTS ubuntu@"$IP" 'Rscript -e "library(rayshader)" >/dev/null 2>&1 && echo "READY: R and rayshader installed" || echo "NOT READY: rayshader not available yet"'
+        exit 0
+        ;;
+esac
+
+# Parse arguments: files before -- are uploads, after -- are downloads
+SCRIPT="$1"; shift
+UPLOADS=()
+DOWNLOADS=()
+PAST_SEP=false
+
+for arg in "$@"; do
+    if [[ "$arg" == "--" ]]; then
+        PAST_SEP=true
+        continue
+    fi
+    if $PAST_SEP; then
+        DOWNLOADS+=("$arg")
+    else
+        UPLOADS+=("$arg")
+    fi
+done
+
+get_ip
+
+echo "==> Uploading files to $IP:$REMOTE_DIR/"
+ssh $SSH_OPTS ubuntu@"$IP" "mkdir -p $REMOTE_DIR"
+scp $SSH_OPTS "$SCRIPT" "${UPLOADS[@]}" ubuntu@"$IP":"$REMOTE_DIR/" 2>/dev/null || \
+    scp $SSH_OPTS "$SCRIPT" ubuntu@"$IP":"$REMOTE_DIR/"
+
+SCRIPT_NAME=$(basename "$SCRIPT")
+
+echo "==> Running $SCRIPT_NAME on GPU instance..."
+ssh $SSH_OPTS ubuntu@"$IP" "cd $REMOTE_DIR && xvfb-run -a Rscript $SCRIPT_NAME"
+STATUS=$?
+
+if [[ $STATUS -ne 0 ]]; then
+    echo "Script failed with exit code $STATUS"
+    exit $STATUS
+fi
+
+echo "==> Downloading outputs..."
+mkdir -p output
+
+if [[ ${#DOWNLOADS[@]} -gt 0 ]]; then
+    for f in "${DOWNLOADS[@]}"; do
+        scp $SSH_OPTS ubuntu@"$IP":"$REMOTE_DIR/$f" output/ 2>/dev/null && echo "  Got: $f" || echo "  Missing: $f"
+    done
+else
+    # Auto-download images and PDFs
+    scp $SSH_OPTS ubuntu@"$IP":"$REMOTE_DIR/*.png" output/ 2>/dev/null && echo "  Got: *.png" || true
+    scp $SSH_OPTS ubuntu@"$IP":"$REMOTE_DIR/*.jpg" output/ 2>/dev/null && echo "  Got: *.jpg" || true
+    scp $SSH_OPTS ubuntu@"$IP":"$REMOTE_DIR/*.pdf" output/ 2>/dev/null && echo "  Got: *.pdf" || true
+    scp $SSH_OPTS ubuntu@"$IP":"$REMOTE_DIR/*.tif" output/ 2>/dev/null && echo "  Got: *.tif" || true
+    scp $SSH_OPTS ubuntu@"$IP":"$REMOTE_DIR/*.gif" output/ 2>/dev/null && echo "  Got: *.gif" || true
+fi
+
+echo "==> Done! Output in ./output/"
+ls -lh output/

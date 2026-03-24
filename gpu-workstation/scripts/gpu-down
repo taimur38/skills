@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+STATE_FILE="$HOME/.gpu-instance"
+
+if [[ ! -f "$STATE_FILE" ]]; then
+    echo "No running GPU instance found."
+    exit 0
+fi
+
+INSTANCE_ID=$(cat "$STATE_FILE")
+echo "Terminating instance $INSTANCE_ID..."
+aws ec2 terminate-instances --instance-ids "$INSTANCE_ID" --query 'TerminatingInstances[0].CurrentState.Name' --output text
+rm -f "$STATE_FILE"
+echo "Done. Instance terminated."
