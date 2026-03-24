@@ -18,7 +18,7 @@ OUTPUT="${2:-${INPUT%.md}.docx}"
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 TEMPLATE="$SCRIPT_DIR/../assets/template.docx"
 CSL="$SCRIPT_DIR/../assets/citation-style.csl"
-LUA_FILTER="$SCRIPT_DIR/../assets/growthlabbify.lua"
+LUA_FILTER="$SCRIPT_DIR/growthlabbify.lua"
 
 INPUT_DIR="$(dirname "$INPUT")"
 BIB="$INPUT_DIR/references.bib"
