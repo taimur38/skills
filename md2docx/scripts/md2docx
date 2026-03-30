@@ -52,4 +52,23 @@ pandoc "$INPUT" \
   --lua-filter="$LUA_FILTER" \
   -o "$OUTPUT"
 
+# Suppress Word's "update fields" prompt by patching settings.xml in the output
+python3 -c "
+import zipfile, shutil, sys, re
+src = sys.argv[1]
+tmp = src + '.tmp'
+with zipfile.ZipFile(src, 'r') as zin, zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as zout:
+    for item in zin.infolist():
+        data = zin.read(item.filename)
+        if item.filename == 'word/settings.xml':
+            text = data.decode('utf-8')
+            # Remove any existing updateFields element
+            text = re.sub(r'<w:updateFields[^/]*/>', '', text)
+            # Insert updateFields=false before closing tag
+            text = text.replace('</w:settings>', '<w:updateFields w:val=\"false\"/></w:settings>')
+            data = text.encode('utf-8')
+        zout.writestr(item, data)
+shutil.move(tmp, src)
+" "$OUTPUT"
+
 echo "Created: $OUTPUT"

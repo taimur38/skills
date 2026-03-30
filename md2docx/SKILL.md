@@ -31,7 +31,7 @@ Uses pandoc with all resources bundled in [assets/](assets/):
 - **Reference doc**: [assets/template.docx](assets/template.docx) (custom Word template for styles)
 - **Citation style**: [assets/citation-style.csl](assets/citation-style.csl) (Harvard author-date)
 - **Filters**: `pandoc-crossref` (for figure/table/equation cross-references) and `--citeproc` (for bibliography)
-- **Lua filter**: [assets/growthlabbify.lua](assets/growthlabbify.lua) (figure titles above images, side-by-side layout, source captions, keep-together)
+- **Lua filter**: [scripts/growthlabbify.lua](scripts/growthlabbify.lua) (figure titles above images, side-by-side layout, source captions, keep-together, boxes)
 - **Sections**: Numbered, with table of contents (depth 3)
 
 ## Markdown Citation Syntax
@@ -58,3 +58,19 @@ See @fig:label for details.
 
 See @tbl:label for the data.
 ```
+
+## Boxes
+
+Use pandoc fenced divs with class `box` to create bordered, shaded callout boxes (rendered as single-cell tables in Word):
+
+```markdown
+::: {.box title="Box 1: Key Findings"}
+First paragraph of the box.
+
+Second paragraph with **bold** and *italic* formatting.
+
+- Bullet lists work too
+:::
+```
+
+The `title` attribute is optional. Boxes support paragraphs, bold/italic/code formatting, and bullet/numbered lists.
